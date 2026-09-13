@@ -1,0 +1,320 @@
+"""mail.com 别名操作：创建/删除/列表/域名/默认发件人（CATS 设置接口）。
+
+移植自 maildotcom-sdk 的 MailComWebAliasAddon。
+"""
+
+from __future__ import annotations
+
+import asyncio
+import re
+from dataclasses import dataclass
+
+from .domains import MAILCOM_ALIAS_DOMAIN_SET
+from .errors import (
+    MailComAliasExistsError,
+    MailComAliasLimitError,
+    MailComDomainUnavailableError,
+    MailComError,
+    MailComNotDeletableError,
+    MailComValidationError,
+)
+from .web_alias import MailComHttp, SettingsSession, open_settings_session, settings_request
+
+MAILCOM_ALIAS_LIMIT = 10
+MAILCOM_ALIAS_LIMIT_MESSAGE = (
+    "The maximum number of Alias Addresses has been created. This e-mail-address could not be created"
+)
+
+_LIST_ACCEPT = "application/vnd.ui.trinity.mailaddress.list-v5+json"
+_MINIMAL_ACCEPT = "application/vnd.ui.trinity.minimalmailaddress-v3+json"
+_VALIDATION_RESPONSE = "application/vnd.ui.trinity.email-address-validation-response+json"
+_VALIDATION_REQUEST = "application/vnd.ui.trinity.email-address-validation-request+json"
+
+
+@dataclass
+class SettingsAlias:
+    address: str
+    display_name: str | None = None
+    deletable: bool = True
+    default_sender_address: bool = False
+    default_receiver_address: bool = False
+    pgp_enabled: bool = False
+    state: str = "ACTIVE"
+    type: str | None = None
+    entry_date: str | None = None
+    self_href: str | None = None
+    raw: dict | None = None
+
+    @classmethod
+    def from_json(cls, data: dict) -> SettingsAlias:
+        links = data.get("_links") or {}
+        self_link = links.get("self") or {}
+        return cls(
+            address=data.get("address", ""),
+            display_name=data.get("displayName"),
+            deletable=data.get("deletable", True),
+            default_sender_address=data.get("defaultSenderAddress", False),
+            default_receiver_address=data.get("defaultReceiverAddress", False),
+            pgp_enabled=data.get("pgpEnabled", False),
+            state=data.get("state", "ACTIVE"),
+            type=data.get("type"),
+            entry_date=data.get("entryDate"),
+            self_href=self_link.get("href"),
+            raw=data,
+        )
+
+
+def split_alias_address(value: str) -> tuple[str, str, str]:
+    trimmed = value.strip().lower()
+    parts = trimmed.split("@")
+    if len(parts) > 2 or not parts[0]:
+        raise MailComValidationError(f"Invalid alias address: {value}")
+    local_part = parts[0]
+    domain = parts[1] if len(parts) == 2 and parts[1] else "mail.com"
+    if not re.fullmatch(r"[a-z0-9._-]{3,62}", local_part):
+        raise MailComValidationError(
+            "Alias local part must be 3-62 chars using letters, numbers, dots, dashes, or underscores."
+        )
+    return local_part, domain, f"{local_part}@{domain}"
+
+
+def _alias_identifier(alias: SettingsAlias) -> str:
+    href = alias.self_href
+    if href:
+        marker = "emailaddresses/"
+        index = href.lower().find(marker)
+        if index >= 0:
+            return href[index + len(marker) :]
+    return alias.address
+
+
+def _minimal_alias(alias: SettingsAlias, patch: dict | None = None) -> dict:
+    raw = dict(alias.raw or {})
+    raw.update(patch or {})
+    result: dict = {"address": raw.get("address", alias.address)}
+    for key in (
+        "type",
+        "entryDate",
+        "displayName",
+        "deletable",
+        "pgpEnabled",
+        "defaultSenderAddress",
+        "defaultReceiverAddress",
+        "state",
+    ):
+        if raw.get(key) is not None or (key in raw and raw.get(key) is None and key == "displayName"):
+            if key in raw:
+                result[key] = raw[key]
+    return result
+
+
+class MailComAliasClient:
+    """封装单个 mail.com 账号的别名相关操作。"""
+
+    def __init__(self, http: MailComHttp, session: SettingsSession) -> None:
+        self._http = http
+        self._session = session
+
+    @classmethod
+    async def login(cls, email: str, password: str, timeout: float = 30.0) -> MailComAliasClient:
+        http = MailComHttp(timeout=timeout)
+        session = await open_settings_session(email, password, http)
+        return cls(http, session)
+
+    @classmethod
+    def from_session(
+        cls,
+        access_token: str,
+        cookies: dict[str, str] | None = None,
+        timeout: float = 30.0,
+    ) -> MailComAliasClient:
+        """用已持久化的 settings token + Cookie 直接构造客户端，避免重复登录。"""
+        http = MailComHttp(timeout=timeout)
+        if cookies:
+            http.cookies.load(cookies)
+        session = SettingsSession(access_token=access_token, cookies=dict(cookies or {}))
+        return cls(http, session)
+
+    async def verify_session(self) -> bool:
+        """轻量校验当前 settings token 是否仍然有效。
+
+        仅把明确的鉴权失败（401/403）视为失效；
+        网络抖动、5xx、限流等瞬时问题不应导致丢弃有效会话、触发全量重登。
+        """
+        try:
+            await self.list_aliases()
+            return True
+        except MailComError as exc:
+            status = getattr(exc, "status", None)
+            return status not in (401, 403)
+
+    @property
+    def access_token(self) -> str:
+        return self._session.access_token
+
+    @property
+    def cookies(self) -> dict[str, str]:
+        return dict(self._http.cookies.dump())
+
+    async def close(self) -> None:
+        await self._http.close()
+
+    async def list_aliases(self) -> list[SettingsAlias]:
+        response = await settings_request(
+            self._http,
+            self._session.access_token,
+            "/mailaccount/primary/emailAddresses?absoluteURI=false&q.state.in=ACTIVE&q.type.in=MANAGED%2CDOMAIN_HOSTING",
+            accept=_LIST_ACCEPT,
+            content_type=_LIST_ACCEPT,
+        )
+        data = response.json()
+        return [SettingsAlias.from_json(item) for item in data.get("mailaddresslist", [])]
+
+    async def available_domains(self) -> list[str]:
+        response = await settings_request(
+            self._http,
+            self._session.access_token,
+            "/domains?absoluteURI=false&q.state.eq=ACTIVE&q.legacySupport.eq=true",
+            accept="application/json",
+            content_type="application/json",
+        )
+        server_domains = {
+            item.get("domain", "").strip().lower() for item in response.json().get("domains", []) if item.get("domain")
+        }
+        from .domains import MAILCOM_ALIAS_DOMAINS
+
+        return [domain for domain in MAILCOM_ALIAS_DOMAINS if domain in server_domains]
+
+    async def _validate_address_available(self, address: str) -> None:
+        response = await settings_request(
+            self._http,
+            self._session.access_token,
+            "/mailaccount/emailAddressValidations?absoluteURI=false",
+            method="POST",
+            accept=_VALIDATION_RESPONSE,
+            content_type=_VALIDATION_REQUEST,
+            body=[address],
+        )
+        if response.json():
+            raise MailComValidationError(f"Alias address is not available: {address}")
+
+    async def find_alias(self, address: str) -> SettingsAlias | None:
+        normalized = address.lower()
+        for alias in await self.list_aliases():
+            if alias.address.lower() == normalized:
+                return alias
+        return None
+
+    async def create_alias(self, address: str, *, max_aliases: int = MAILCOM_ALIAS_LIMIT) -> SettingsAlias:
+        _local_part, domain, normalized = split_alias_address(address)
+        if domain not in MAILCOM_ALIAS_DOMAIN_SET:
+            raise MailComDomainUnavailableError(f"Alias domain is not supported by mail.com: {domain}")
+
+        aliases = await self.list_aliases()
+        if len(aliases) >= max_aliases:
+            raise MailComAliasLimitError(MAILCOM_ALIAS_LIMIT_MESSAGE)
+        if any(alias.address.lower() == normalized for alias in aliases):
+            raise MailComAliasExistsError(f"Alias already exists: {normalized}")
+
+        available = await self.available_domains()
+        if domain not in available:
+            raise MailComDomainUnavailableError(f"Alias domain is not available: {domain}", domains=available)
+
+        await self._validate_address_available(normalized)
+        await settings_request(
+            self._http,
+            self._session.access_token,
+            "/mailaccount/primary/emailAddresses?absoluteURI=false",
+            method="POST",
+            accept=_MINIMAL_ACCEPT,
+            content_type=_MINIMAL_ACCEPT,
+            body={
+                "address": normalized,
+                "deletable": True,
+                "pgpEnabled": False,
+                "defaultSenderAddress": False,
+                "defaultReceiverAddress": False,
+                "state": "ACTIVE",
+            },
+        )
+        await self._wait_for_alias(normalized, should_exist=True)
+        created = await self.find_alias(normalized)
+        if created is None:
+            raise MailComValidationError(f"Alias was not created: {normalized}")
+        return created
+
+    async def delete_alias(self, address: str) -> None:
+        _lp, _domain, normalized = split_alias_address(address)
+        alias = await self.find_alias(normalized)
+        if alias is None:
+            raise MailComValidationError(f"Alias not found: {normalized}")
+        if alias.deletable is False:
+            raise MailComNotDeletableError(f"Alias is not allowed for deletion: {normalized}")
+
+        await settings_request(
+            self._http,
+            self._session.access_token,
+            f"/mailaccount/primary/emailAddressesRemovals/{normalized}/removals?absoluteURI=false",
+            method="POST",
+            accept="text/plain;charset=UTF-8",
+            content_type="text/plain;charset=UTF-8",
+        )
+        await self._wait_for_alias(normalized, should_exist=False)
+
+    async def set_default_sender(self, address: str, sender: str = "email") -> SettingsAlias:
+        _lp, _domain, normalized = split_alias_address(address)
+        alias = await self.find_alias(normalized)
+        if alias is None:
+            raise MailComValidationError(f"Alias not found: {normalized}")
+        if sender == "name-email" and not (alias.display_name or "").strip():
+            raise MailComValidationError(f"Default sender option not available for {normalized}: name-email")
+
+        patch: dict = {"defaultSenderAddress": True}
+        if sender == "email":
+            patch["displayName"] = ""
+        payload = _minimal_alias(alias, patch)
+        identifier = _alias_identifier(alias)
+        await settings_request(
+            self._http,
+            self._session.access_token,
+            f"/emailAddresses/{identifier}?absoluteURI=false",
+            method="PUT",
+            accept=_MINIMAL_ACCEPT,
+            content_type=_MINIMAL_ACCEPT,
+            body=payload,
+        )
+        updated = await self.find_alias(normalized)
+        if updated is None or not updated.default_sender_address:
+            raise MailComValidationError(f"Default sender was not updated: {normalized}")
+        return updated
+
+    async def set_display_name(self, address: str, display_name: str) -> SettingsAlias:
+        _lp, _domain, normalized = split_alias_address(address)
+        alias = await self.find_alias(normalized)
+        if alias is None:
+            raise MailComValidationError(f"Alias not found: {normalized}")
+        payload = _minimal_alias(alias, {"displayName": display_name})
+        identifier = _alias_identifier(alias)
+        await settings_request(
+            self._http,
+            self._session.access_token,
+            f"/emailAddresses/{identifier}?absoluteURI=false",
+            method="PUT",
+            accept=_MINIMAL_ACCEPT,
+            content_type=_MINIMAL_ACCEPT,
+            body=payload,
+        )
+        updated = await self.find_alias(normalized)
+        if updated is None:
+            raise MailComValidationError(f"Alias not found after update: {normalized}")
+        return updated
+
+    async def _wait_for_alias(self, address: str, *, should_exist: bool, attempts: int = 4) -> None:
+        for attempt in range(attempts):
+            found = await self.find_alias(address) is not None
+            if found == should_exist:
+                return
+            if attempt < attempts - 1:
+                await asyncio.sleep(1.0 * (attempt + 1))
+        action = "created" if should_exist else "deleted"
+        raise MailComValidationError(f"Alias was not {action}: {address}")
