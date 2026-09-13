@@ -7,14 +7,16 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import json
 import secrets
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 
 import httpx
 
 from .errors import MailComApiError, MailComAuthError, MailComError
+from .verification_code import extract_verification_code
 
 OAUTH_BASE_URL = "https://oauth2.mail.com"
 MOBSI_BASE_URL = "https://mobsi.mail.com/rest/MobSI"
@@ -44,8 +46,30 @@ FULL_ACCESS_SCOPE = (
 DEFAULT_EXCLUDED_FOLDERS = ("TRASH", "DRAFTS", "OUTBOX")
 MESSAGES_MIME = "application/vnd.ui.trinity.messages+json"
 BODY_HTML = "text/vnd.ui.insecure+html; removeCharsetMetaInfo=true"
+BODY_PREVIEW_SSE = "text/event-stream; length=300; builder=html"
 BATCH_UPDATE = "application/vnd.ui.trinity.message.batchupdate-v2+json"
 BATCH_UPDATE_RESULT = "application/vnd.ui.trinity.message.batchupdate.result-v2+json"
+
+
+def _parse_sse_json(text: str) -> list[dict]:
+    """解析 SSE 响应中的 JSON data 行（对齐 SDK 的 parseSseJsonData）。"""
+    payloads: list[dict] = []
+    for block in text.replace("\r\n", "\n").split("\n\n"):
+        data_lines = [line[len("data:") :].strip() for line in block.split("\n") if line.startswith("data:")]
+        if not data_lines:
+            continue
+        raw = "\n".join(data_lines).strip()
+        if not raw.startswith("{") and not raw.startswith("["):
+            continue
+        try:
+            parsed = json.loads(raw)
+        except ValueError:
+            continue
+        if isinstance(parsed, dict):
+            payloads.append(parsed)
+        elif isinstance(parsed, list):
+            payloads.extend(item for item in parsed if isinstance(item, dict))
+    return payloads
 
 
 def _base64_url(data: bytes) -> str:
@@ -85,6 +109,7 @@ class Message:
     has_attachments: bool = False
     folder: str = ""
     mail_uri: str = ""
+    code: str | None = None
 
 
 def _normalize_date(value: object) -> str:
@@ -392,7 +417,43 @@ class MobileClient:
             for item in data.get("mail", []):
                 messages.append(self._to_message(item))
         messages.sort(key=lambda item: item.date, reverse=True)
-        return messages[:amount]
+        messages = messages[:amount]
+
+        # 列表接口不返回正文摘要，需单独调用 bodypreviews 接口补全，
+        # 否则前端只能看到主题（验证码就在摘要里）。
+        if messages:
+            previews = await self._fetch_previews([message.id for message in messages])
+            for message in messages:
+                message.preview = previews.get(message.id, "")
+                # 从主题与摘要中提取验证码，便于前端直接展示
+                message.code = extract_verification_code(message.subject, message.preview)
+
+        return messages
+
+    async def _fetch_previews(self, mail_ids: list[str]) -> dict[str, str]:
+        """批量获取邮件正文摘要（SSE 响应）。失败时返回空，不影响列表。"""
+        if not mail_ids:
+            return {}
+        url = f"{HSP2_BASE_URL}/msgsrv/Mailbox/primaryMailbox/Mail/bodypreviews"
+        try:
+            response = await self._request(
+                "POST",
+                url,
+                headers={
+                    "Accept": BODY_PREVIEW_SSE,
+                    "Content-Type": "application/x-www-form-urlencoded",
+                },
+                content="&".join(f"mailIdentifier={quote(str(mid), safe='')}" for mid in mail_ids),
+            )
+        except MailComError:
+            return {}
+
+        previews: dict[str, str] = {}
+        for payload in _parse_sse_json(response.text):
+            identifier = payload.get("mailIdentifier")
+            if identifier:
+                previews[str(identifier)] = str(payload.get("preview") or "")
+        return previews
 
     async def _incoming_folder_ids(self) -> list[str]:
         url = f"{HSP2_BASE_URL}/msgsrv/Mailbox/primaryMailbox/folders?absoluteURI=false"

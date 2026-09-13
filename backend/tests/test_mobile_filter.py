@@ -96,3 +96,29 @@ def test_recipient_is_escaped() -> None:
     asyncio.run(main())
     # 冒号需转义，避免破坏条件语法
     assert _condition_of(recorded[0]) == "mail.header:to:weird\\:name@mail.com"
+
+
+def test_parse_sse_json_extracts_preview() -> None:
+    from app.mailcom.mobile_api import _parse_sse_json
+
+    sse = (
+        "id: 1\r\nevent: success\r\n"
+        'data: {"mailIdentifier":"123","preview":"code 065474"}\r\n\r\n'
+        ": noop (finally)\r\n\r\n"
+    )
+    payloads = _parse_sse_json(sse)
+    assert payloads == [{"mailIdentifier": "123", "preview": "code 065474"}]
+
+
+def test_parse_sse_json_ignores_non_json_and_empty() -> None:
+    from app.mailcom.mobile_api import _parse_sse_json
+
+    sse = "event: ping\ndata: not-json\n\n: comment only\n\n"
+    assert _parse_sse_json(sse) == []
+
+
+def test_parse_sse_json_handles_array_payload() -> None:
+    from app.mailcom.mobile_api import _parse_sse_json
+
+    sse = 'data: [{"mailIdentifier":"a"},{"mailIdentifier":"b"}]\n\n'
+    assert _parse_sse_json(sse) == [{"mailIdentifier": "a"}, {"mailIdentifier": "b"}]

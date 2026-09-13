@@ -11,7 +11,7 @@ from ..config import settings
 from ..mailcom import MailComAliasClient, MailComError
 from ..models import Account
 from ..schemas import AccountOut
-from ..security.crypto import encrypt_secret
+from ..security.crypto import decrypt_secret, encrypt_secret
 from .session_manager import acquire_client, store_settings_session
 
 
@@ -53,6 +53,26 @@ class AccountService:
 
     def get_by_key(self, account_key: str) -> Account | None:
         return self.db.query(Account).filter(Account.account_key == account_key).first()
+
+    def export_credentials(self) -> list[dict[str, object]]:
+        """导出账号凭据（解密密码），格式为 `邮箱----密码`，可再次批量导入。"""
+        accounts = self.db.query(Account).order_by(Account.id.asc()).all()
+        exported: list[dict[str, object]] = []
+        for account in accounts:
+            try:
+                password = decrypt_secret(account.password_enc)
+            except MailComError:
+                # 密钥不匹配时跳过该账号，避免整批导出失败
+                continue
+            exported.append(
+                {
+                    "email": account.email,
+                    "password": password,
+                    "session_state": account.session_state,
+                    "alias_count": len(account.aliases),
+                }
+            )
+        return exported
 
     async def add(self, email: str, password: str) -> AccountOut:
         normalized = email.strip().lower()

@@ -13,6 +13,7 @@ class MessageOut(BaseModel):
     read: bool
     has_attachments: bool
     folder: str
+    code: str | None = None
 
     model_config = {"populate_by_name": True}
 

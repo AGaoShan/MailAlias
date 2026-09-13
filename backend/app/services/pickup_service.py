@@ -40,6 +40,7 @@ def _message_out(message: Message) -> MessageOut:
         read=message.read,
         has_attachments=message.has_attachments,
         folder=message.folder,
+        code=message.code,
     )
 
 
@@ -54,6 +55,7 @@ def _message_dict(message: Message) -> dict:
         "read": message.read,
         "has_attachments": message.has_attachments,
         "folder": message.folder,
+        "code": message.code,
     }
 
 

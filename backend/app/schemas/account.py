@@ -29,3 +29,15 @@ class AccountVerifyOut(BaseModel):
 class DomainsOut(BaseModel):
     account_id: int
     domains: list[str]
+
+
+class AccountExportItem(BaseModel):
+    email: str
+    password: str
+    session_state: str
+    alias_count: int
+
+
+class AccountExportOut(BaseModel):
+    total: int
+    items: list[AccountExportItem]
