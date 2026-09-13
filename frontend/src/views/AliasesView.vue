@@ -17,6 +17,15 @@
         <el-button :disabled="!accountId" :loading="aliasStore.loading" @click="loadAliases">
           <el-icon><Refresh /></el-icon>刷新
         </el-button>
+        <el-button
+          :disabled="aliasStore.aliases.length === 0"
+          @click="copyAllAliases"
+        >
+          <el-icon><DocumentCopy /></el-icon>复制全部
+        </el-button>
+        <el-button type="primary" plain :disabled="!hasAnyAccount" @click="openBatch">
+          <el-icon><Files /></el-icon>批量生成
+        </el-button>
         <el-button type="primary" :disabled="!canCreate" @click="openCreate">
           <el-icon><Plus /></el-icon>创建别名
         </el-button>
@@ -132,6 +141,81 @@
       </template>
     </el-dialog>
 
+    <el-dialog v-model="batchVisible" title="批量生成别名" width="720px" @closed="resetBatch">
+      <el-form label-width="90px">
+        <el-form-item label="账号">
+          <el-select v-model="batchAccountMode" style="width: 100%">
+            <el-option label="自动选择（按剩余额度分配）" value="auto" />
+            <el-option
+              v-for="account in store.accounts"
+              :key="account.id"
+              :label="`${account.email}（${account.alias_count}/${account.alias_limit}）`"
+              :value="account.id"
+            />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="生成数量">
+          <div class="gen-row">
+            <el-input-number v-model="batchCount" :min="1" :max="100" :step="1" />
+            <span class="text-muted gen-hint">
+              剩余可创建约 {{ remainingCapacity }} 个，超出部分会自动跳过并提示
+            </span>
+          </div>
+        </el-form-item>
+        <el-form-item label="后缀域名">
+          <div class="gen-row">
+            <el-select
+              v-model="batchDomain"
+              filterable
+              style="width: 260px"
+              :loading="domainsLoading"
+              placeholder="选择域名"
+            >
+              <el-option v-for="domain in aliasStore.domains" :key="domain" :label="domain" :value="domain" />
+            </el-select>
+            <el-button :loading="domainsLoading" @click="refreshDomains">
+              <el-icon><Refresh /></el-icon>刷新域名
+            </el-button>
+          </div>
+        </el-form-item>
+        <el-form-item label="固定前缀">
+          <div class="gen-row">
+            <el-input v-model="batchPrefix" placeholder="可选，如 tmp（便于识别）" style="width: 200px" @input="onPrefixInput" />
+            <span class="text-muted gen-hint">随机部分长度</span>
+            <el-input-number v-model="batchLength" :min="6" :max="40" :step="1" />
+          </div>
+        </el-form-item>
+        <el-form-item label="预览">
+          <span class="mono text-muted">{{ previewAddress }}</span>
+        </el-form-item>
+        <el-alert
+          type="info"
+          :closable="false"
+          title="别名由随机字母/数字（含可选 . - _ 分隔符）生成；每账号最多 10 个"
+        />
+      </el-form>
+
+      <template v-if="batchResults.length">
+        <el-divider content-position="left">生成结果</el-divider>
+        <el-alert type="info" :closable="false" class="mb-12" title="输出格式：别名邮箱----取件地址" />
+        <el-input v-model="batchOutput" type="textarea" :rows="8" readonly class="mono" />
+        <div class="batch-actions">
+          <el-button size="small" @click="copyBatchOutput">复制结果</el-button>
+          <el-button size="small" @click="downloadBatchOutput">下载 txt</el-button>
+          <span class="text-muted batch-stat">
+            成功 {{ batchSuccessCount }} / {{ batchResults.length }}
+          </span>
+        </div>
+      </template>
+
+      <template #footer>
+        <el-button @click="batchVisible = false">关闭</el-button>
+        <el-button type="primary" :loading="batchRunning" @click="handleBatchGenerate">
+          生成 {{ batchCount }} 个
+        </el-button>
+      </template>
+    </el-dialog>
+
     <el-dialog v-model="senderVisible" title="设置默认发件人" width="460px">
       <el-form label-width="100px">
         <el-form-item label="别名">
@@ -196,6 +280,53 @@ const senderTarget = ref<Alias | null>(null);
 const senderMode = ref<"email" | "name-email">("email");
 const senderDisplayName = ref("");
 const senderSaving = ref(false);
+
+interface BatchResult {
+  key: string;
+  address: string;
+  ok: boolean;
+  pickupUrl?: string;
+  message?: string;
+}
+
+const batchVisible = ref(false);
+const batchRunning = ref(false);
+const batchAccountMode = ref<"auto" | number>("auto");
+const batchResults = ref<BatchResult[]>([]);
+const batchCount = ref(10);
+const batchDomain = ref("mail.com");
+const batchPrefix = ref("");
+const batchLength = ref(10);
+
+const batchSuccessCount = computed(() => batchResults.value.filter((item) => item.ok).length);
+const batchOutput = computed(() =>
+  batchResults.value
+    .filter((item) => item.ok && item.pickupUrl)
+    .map((item) => `${item.address}----${item.pickupUrl}`)
+    .join("\n"),
+);
+const hasAnyAccount = computed(() =>
+  store.accounts.some((account) => account.alias_count < account.alias_limit),
+);
+
+/** 按选择范围计算剩余可创建数量 */
+const remainingCapacity = computed(() => {
+  const scope =
+    batchAccountMode.value === "auto"
+      ? store.accounts
+      : store.accounts.filter((account) => account.id === batchAccountMode.value);
+  return scope.reduce((sum, account) => sum + Math.max(0, account.alias_limit - account.alias_count), 0);
+});
+
+/** 预览一个示例地址 */
+const previewAddress = computed(() => {
+  const rand = "kx7fq2m9z0".slice(0, Math.max(1, batchLength.value - batchPrefix.value.length));
+  return `${batchPrefix.value}${rand}@${batchDomain.value}`;
+});
+
+function onPrefixInput(value: string): void {
+  batchPrefix.value = value.toLowerCase().replace(/[^a-z0-9._-]/g, "");
+}
 
 const currentAccount = computed(() => store.accounts.find((account) => account.id === accountId.value) ?? null);
 const canCreate = computed(
@@ -272,6 +403,115 @@ async function handleCreate(): Promise<void> {
 async function copyPickup(row: Alias): Promise<void> {
   const ok = await copyText(row.pickup_url);
   if (ok) ElMessage.success("取件地址已复制");
+}
+
+/** 全部别名按 `别名邮箱----取件地址` 格式导出 */
+const aliasExportText = computed(() =>
+  aliasStore.aliases.map((alias) => `${alias.address}----${alias.pickup_url}`).join("\n"),
+);
+
+async function copyAllAliases(): Promise<void> {
+  if (!aliasExportText.value) {
+    ElMessage.warning("没有可复制的别名");
+    return;
+  }
+  const ok = await copyText(aliasExportText.value);
+  if (ok) {
+    ElMessage.success(`已复制 ${aliasStore.aliases.length} 条（格式：别名----取件地址）`);
+  }
+}
+
+/**
+ * 打开批量生成对话框，并确保域名列表已加载。
+ */
+async function openBatch(): Promise<void> {
+  batchAccountMode.value = "auto";
+  batchResults.value = [];
+  batchVisible.value = true;
+  if (aliasStore.domains.length === 0) {
+    await refreshDomains();
+  }
+  if (aliasStore.domains.length > 0 && !aliasStore.domains.includes(batchDomain.value)) {
+    batchDomain.value = aliasStore.domains[0]!;
+  }
+}
+
+function resetBatch(): void {
+  batchResults.value = [];
+  batchAccountMode.value = "auto";
+}
+
+/** 强制回源刷新域名（不走本地缓存） */
+async function refreshDomains(): Promise<void> {
+  if (!accountId.value) return;
+  domainsLoading.value = true;
+  try {
+    await aliasStore.fetchDomains(accountId.value, true);
+    ElMessage.success(`已更新域名列表（${aliasStore.domains.length} 个）`);
+  } finally {
+    domainsLoading.value = false;
+  }
+}
+
+async function handleBatchGenerate(): Promise<void> {
+  if (batchCount.value < 1) {
+    ElMessage.warning("请填写生成数量");
+    return;
+  }
+  batchRunning.value = true;
+  batchResults.value = [];
+  const accountId = batchAccountMode.value === "auto" ? null : batchAccountMode.value;
+
+  try {
+    const result = await aliasStore.batchGenerate({
+      count: batchCount.value,
+      domain: batchDomain.value,
+      accountId,
+      prefix: batchPrefix.value,
+      length: batchLength.value,
+    });
+    batchResults.value = result.items.map((item) => ({
+      key: item.address,
+      address: item.address,
+      ok: item.ok,
+      pickupUrl: item.alias?.pickup_url,
+      message: item.error?.message,
+    }));
+    if (result.failed > 0) {
+      ElMessage.warning(`生成完成：成功 ${result.created}，失败 ${result.failed}`);
+    } else {
+      ElMessage.success(`生成完成：成功创建 ${result.created} 个别名`);
+    }
+    await store.fetchAll();
+    await loadAliases();
+  } finally {
+    batchRunning.value = false;
+  }
+}
+
+async function copyBatchOutput(): Promise<void> {
+  if (!batchOutput.value) {
+    ElMessage.warning("没有可复制的结果");
+    return;
+  }
+  const ok = await copyText(batchOutput.value);
+  if (ok) ElMessage.success("已复制（格式：别名----取件地址）");
+}
+
+function downloadBatchOutput(): void {
+  if (!batchOutput.value) {
+    ElMessage.warning("没有可下载的结果");
+    return;
+  }
+  const blob = new Blob([batchOutput.value], { type: "text/plain;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `aliases_${Date.now()}.txt`;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
 }
 
 function openSender(row: Alias): void {
@@ -395,6 +635,71 @@ onMounted(async () => {
 
 .alias-input {
   width: 100%;
+}
+
+/* ---------- 批量生成 ---------- */
+.gen-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.gen-hint {
+  font-size: 12px;
+}
+
+.batch-summary {
+  display: flex;
+  gap: 8px;
+}
+
+.invalid-lines {
+  font-size: 12px;
+  color: var(--danger);
+  word-break: break-all;
+}
+
+.batch-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.batch-stat {
+  font-size: 12px;
+  margin-left: auto;
+}
+
+.batch-list {
+  margin-top: 12px;
+  max-height: 180px;
+  overflow-y: auto;
+}
+
+.batch-result-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+  font-size: 13px;
+  min-width: 0;
+}
+
+.result-msg {
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.result-msg.error {
+  color: var(--danger);
+}
+
+.mb-12 {
+  margin-bottom: 12px;
 }
 
 @media (max-width: 760px) {

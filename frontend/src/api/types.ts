@@ -42,6 +42,20 @@ export interface Alias {
   last_fetched_at: string | null;
 }
 
+export interface AliasBatchItem {
+  address: string;
+  ok: boolean;
+  alias: Alias | null;
+  error: { code: string; message: string } | null;
+}
+
+export interface AliasBatchResult {
+  requested: number;
+  created: number;
+  failed: number;
+  items: AliasBatchItem[];
+}
+
 export interface Mapping {
   alias_id: number;
   account_id: number;

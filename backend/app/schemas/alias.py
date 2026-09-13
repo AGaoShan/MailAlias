@@ -7,6 +7,41 @@ class AliasCreate(BaseModel):
     address: str = Field(min_length=3, max_length=255)
 
 
+class AliasAutoCreate(BaseModel):
+    """自动选号创建：只需别名（可含 @域名），后端自动挑还有额度的账号。"""
+
+    address: str = Field(
+        min_length=3,
+        max_length=255,
+        description="别名邮箱地址，如 my-alias@mail.com；或仅前缀 my-alias（默认 mail.com）",
+    )
+    account_id: int | None = Field(default=None, description="可选：指定账号，不填则自动选择")
+
+
+class AliasBatchGenerate(BaseModel):
+    """按数量随机生成并批量创建别名。"""
+
+    count: int = Field(ge=1, le=100, description="要生成的数量")
+    domain: str = Field(default="mail.com", description="后缀域名")
+    account_id: int | None = Field(default=None, description="可选：指定账号，不填则自动分配")
+    prefix: str = Field(default="", max_length=20, description="可选：固定前缀，便于识别")
+    length: int = Field(default=10, ge=6, le=40, description="随机部分的长度")
+
+
+class AliasBatchItem(BaseModel):
+    address: str
+    ok: bool
+    alias: AliasOut | None = None
+    error: dict | None = None
+
+
+class AliasBatchResult(BaseModel):
+    requested: int
+    created: int
+    failed: int
+    items: list[AliasBatchItem]
+
+
 class AliasOut(BaseModel):
     id: int
     account_id: int

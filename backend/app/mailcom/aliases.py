@@ -5,7 +5,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import re
 from dataclasses import dataclass
 
@@ -68,13 +67,13 @@ def split_alias_address(value: str) -> tuple[str, str, str]:
     trimmed = value.strip().lower()
     parts = trimmed.split("@")
     if len(parts) > 2 or not parts[0]:
-        raise MailComValidationError(f"Invalid alias address: {value}")
+        raise MailComValidationError(f"别名地址格式不正确：{value}")
     local_part = parts[0]
     domain = parts[1] if len(parts) == 2 and parts[1] else "mail.com"
+    if domain not in MAILCOM_ALIAS_DOMAIN_SET:
+        raise MailComDomainUnavailableError(f"不支持该别名域名：{domain}")
     if not re.fullmatch(r"[a-z0-9._-]{3,62}", local_part):
-        raise MailComValidationError(
-            "Alias local part must be 3-62 chars using letters, numbers, dots, dashes, or underscores."
-        )
+        raise MailComValidationError("别名前缀需为 3-62 位，仅允许小写字母、数字、点、下划线、连字符")
     return local_part, domain, f"{local_part}@{domain}"
 
 
@@ -114,6 +113,12 @@ class MailComAliasClient:
     def __init__(self, http: MailComHttp, session: SettingsSession) -> None:
         self._http = http
         self._session = session
+        # 实例内缓存：批量创建时避免每个别名都重复拉取列表与域名
+        self._aliases_cache: list[SettingsAlias] | None = None
+        self._domains_cache: list[str] | None = None
+
+    def invalidate_cache(self) -> None:
+        self._aliases_cache = None
 
     @classmethod
     async def login(cls, email: str, password: str, timeout: float = 30.0) -> MailComAliasClient:
@@ -159,7 +164,9 @@ class MailComAliasClient:
     async def close(self) -> None:
         await self._http.close()
 
-    async def list_aliases(self) -> list[SettingsAlias]:
+    async def list_aliases(self, *, use_cache: bool = True) -> list[SettingsAlias]:
+        if use_cache and self._aliases_cache is not None:
+            return self._aliases_cache
         response = await settings_request(
             self._http,
             self._session.access_token,
@@ -168,9 +175,13 @@ class MailComAliasClient:
             content_type=_LIST_ACCEPT,
         )
         data = response.json()
-        return [SettingsAlias.from_json(item) for item in data.get("mailaddresslist", [])]
+        aliases = [SettingsAlias.from_json(item) for item in data.get("mailaddresslist", [])]
+        self._aliases_cache = aliases
+        return aliases
 
-    async def available_domains(self) -> list[str]:
+    async def available_domains(self, *, use_cache: bool = True) -> list[str]:
+        if use_cache and self._domains_cache is not None:
+            return self._domains_cache
         response = await settings_request(
             self._http,
             self._session.access_token,
@@ -183,7 +194,9 @@ class MailComAliasClient:
         }
         from .domains import MAILCOM_ALIAS_DOMAINS
 
-        return [domain for domain in MAILCOM_ALIAS_DOMAINS if domain in server_domains]
+        domains = [domain for domain in MAILCOM_ALIAS_DOMAINS if domain in server_domains]
+        self._domains_cache = domains
+        return domains
 
     async def _validate_address_available(self, address: str) -> None:
         response = await settings_request(
@@ -205,7 +218,17 @@ class MailComAliasClient:
                 return alias
         return None
 
-    async def create_alias(self, address: str, *, max_aliases: int = MAILCOM_ALIAS_LIMIT) -> SettingsAlias:
+    async def create_alias(
+        self,
+        address: str,
+        *,
+        max_aliases: int = MAILCOM_ALIAS_LIMIT,
+    ) -> SettingsAlias:
+        """创建别名。
+
+        会基于上游真实别名列表做额度与重复校验；该列表在实例内缓存，
+        因此同一批量会话中多次创建不会重复拉取（仅创建后失效一次）。
+        """
         _local_part, domain, normalized = split_alias_address(address)
         if domain not in MAILCOM_ALIAS_DOMAIN_SET:
             raise MailComDomainUnavailableError(f"Alias domain is not supported by mail.com: {domain}")
@@ -237,10 +260,19 @@ class MailComAliasClient:
                 "state": "ACTIVE",
             },
         )
-        await self._wait_for_alias(normalized, should_exist=True)
-        created = await self.find_alias(normalized)
-        if created is None:
-            raise MailComValidationError(f"Alias was not created: {normalized}")
+        # 上游已返回成功，直接在本地缓存中补一条，
+        # 避免再拉一次完整列表（这是批量创建的主要耗时来源之一）。
+        created = SettingsAlias(
+            address=normalized,
+            display_name=None,
+            deletable=True,
+            default_sender_address=False,
+            default_receiver_address=False,
+            pgp_enabled=False,
+            state="ACTIVE",
+        )
+        if self._aliases_cache is not None:
+            self._aliases_cache.append(created)
         return created
 
     async def delete_alias(self, address: str) -> None:
@@ -259,7 +291,9 @@ class MailComAliasClient:
             accept="text/plain;charset=UTF-8",
             content_type="text/plain;charset=UTF-8",
         )
-        await self._wait_for_alias(normalized, should_exist=False)
+        # 上游已接受删除，本地缓存同步移除，避免再拉一次列表
+        if self._aliases_cache is not None:
+            self._aliases_cache = [item for item in self._aliases_cache if item.address.lower() != normalized]
 
     async def set_default_sender(self, address: str, sender: str = "email") -> SettingsAlias:
         _lp, _domain, normalized = split_alias_address(address)
@@ -308,13 +342,3 @@ class MailComAliasClient:
         if updated is None:
             raise MailComValidationError(f"Alias not found after update: {normalized}")
         return updated
-
-    async def _wait_for_alias(self, address: str, *, should_exist: bool, attempts: int = 4) -> None:
-        for attempt in range(attempts):
-            found = await self.find_alias(address) is not None
-            if found == should_exist:
-                return
-            if attempt < attempts - 1:
-                await asyncio.sleep(1.0 * (attempt + 1))
-        action = "created" if should_exist else "deleted"
-        raise MailComValidationError(f"Alias was not {action}: {address}")

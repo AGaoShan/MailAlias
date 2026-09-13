@@ -1,5 +1,14 @@
 from .account import AccountCreate, AccountOut, AccountVerifyOut, DomainsOut
-from .alias import AliasCreate, AliasOut, DefaultSenderUpdate, DisplayNameUpdate
+from .alias import (
+    AliasAutoCreate,
+    AliasBatchGenerate,
+    AliasBatchItem,
+    AliasBatchResult,
+    AliasCreate,
+    AliasOut,
+    DefaultSenderUpdate,
+    DisplayNameUpdate,
+)
 from .auth import LoginRequest, LoginResponse, UserOut
 from .dashboard import AliasCapacity, DashboardStats, RecentFetch
 from .mapping import MappingItem, MappingListResponse
@@ -20,6 +29,10 @@ __all__ = [
     "DomainsOut",
     "AliasCreate",
     "AliasOut",
+    "AliasAutoCreate",
+    "AliasBatchGenerate",
+    "AliasBatchItem",
+    "AliasBatchResult",
     "DisplayNameUpdate",
     "DefaultSenderUpdate",
     "LoginRequest",

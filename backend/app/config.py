@@ -24,12 +24,15 @@ class Settings(BaseSettings):
     mailcom_timeout: int = 30
 
     max_aliases_per_account: int = 10
+    domain_cache_ttl: int = 7 * 24 * 3600
 
     pickup_concurrency_per_account: int = 2
     pickup_global_concurrency: int = 8
     rate_limit_per_account_qps: float = 1.0
     rate_limit_global_qps: float = 5.0
-    write_min_interval: float = 2.0
+    # 写操作最小间隔（秒）。mail.com 对高频写入敏感，但 2s 过慢；
+    # 0.4s 在批量创建时既明显提速，又不至于触发风控。
+    write_min_interval: float = 0.4
     retry_max_attempts: int = 3
     retry_base_delay: float = 1.0
     circuit_fail_threshold: int = 5

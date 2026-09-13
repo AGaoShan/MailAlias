@@ -180,6 +180,92 @@
 
 响应 `204`。
 
+### POST `/aliases`
+
+> **自动选号创建**：只需别名地址，后端自动挑选仍有别名额度的账号创建。
+
+请求：
+
+```json
+{ "address": "my-alias@mail.com", "account_id": null }
+```
+
+- `address`：完整地址 `my-alias@mail.com`，或仅前缀 `my-alias`（默认补 `mail.com`）
+- `account_id`：可选；指定则只在该账号创建，不填则自动选择
+
+自动选择规则：过滤启用且未满 10 个别名的账号 → 剩余额度最多优先 → 已有别名最少 → id 最小。
+
+响应 `201`：`AliasOut`
+
+行为说明：
+
+- **幂等**：若该别名已存在于任意账号，直接返回已存在的别名（不报错）
+- 无可用账号 → `404 NOT_FOUND`；全部账号已满 → `409 ALIAS_LIMIT_REACHED`
+- 域名不在白名单 → `422 DOMAIN_UNAVAILABLE`
+
+### POST `/aliases/batch-generate`
+
+> 指定**数量 + 后缀**，随机生成别名并批量创建。**能建多少建多少**，额度用尽的部分记为失败但不中断。
+
+请求：
+
+```json
+{
+  "count": 10,
+  "domain": "mail.com",
+  "account_id": null,
+  "prefix": "",
+  "length": 10
+}
+```
+
+| 字段 | 默认 | 说明 |
+| --- | --- | --- |
+| `count` | — | 生成数量，1-100 |
+| `domain` | `mail.com` | 后缀域名（须在 mail.com 可用域名白名单内） |
+| `account_id` | `null` | 指定账号；不填则自动分配 |
+| `prefix` | `""` | 可选固定前缀，便于识别 |
+| `length` | `10` | 随机部分长度，6-40 |
+
+随机前缀字符集：小写字母、数字，以及 `.` `-` `_` 分隔符（首尾不使用分隔符）。
+
+**性能说明**
+
+- 同一账号的创建操作**串行执行**（避免并发写入触发 mail.com 风控），不同账号可并行
+- 上游别名列表与可用域名在单次批量会话内**只拉取一次**并复用
+- 创建成功后**直接写入本地缓存**，不再回拉列表校验
+- 单个别名纯上游耗时约 1.5s（地址校验 + 创建两步网络往返），这是 mail.com 的固有延迟
+
+响应 `201`：
+
+```json
+{
+  "requested": 10,
+  "created": 8,
+  "failed": 2,
+  "items": [
+    {
+      "address": "kx7fq2m9z0@mail.com",
+      "ok": true,
+      "alias": { /* AliasOut */ },
+      "error": null
+    },
+    {
+      "address": "ab3x9k2m1q@mail.com",
+      "ok": false,
+      "alias": null,
+      "error": { "code": "ALIAS_LIMIT_REACHED", "message": "所有账号的别名数量都已达上限" }
+    }
+  ]
+}
+```
+
+### GET `/accounts/{id}/domains`
+
+查询参数：`refresh`（默认 `false`）。默认读取**本地缓存**（TTL 7 天）；`refresh=true` 时强制回源 mail.com。
+
+响应 `200`：`{ "account_id": 1, "domains": ["mail.com", "email.com", ...] }`
+
 ### PUT `/aliases/{id}/default-sender`
 
 请求：

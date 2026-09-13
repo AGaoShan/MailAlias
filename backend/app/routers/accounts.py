@@ -96,16 +96,18 @@ async def create_alias(
         raise to_http_exception(exc) from exc
 
 
-@router.get("/{account_id}/domains", response_model=DomainsOut, summary="可用域名")
+@router.get("/{account_id}/domains", response_model=DomainsOut, summary="可用域名（带本地缓存）")
 async def list_domains(
     account_id: int,
+    refresh: bool = False,
     db: Session = Depends(get_db),
     resolver: PickupResolver = Depends(get_pickup_resolver),
     write_limiter: WriteRateLimiter = Depends(get_write_limiter),
     _user: User = Depends(get_current_user),
 ) -> DomainsOut:
+    """返回账号可用域名；默认读取本地缓存，refresh=true 时强制回源。"""
     try:
-        domains = await _alias_service(db, resolver, write_limiter).domains(account_id)
+        domains = await _alias_service(db, resolver, write_limiter).domains(account_id, refresh=refresh)
     except MailComError as exc:
         raise to_http_exception(exc) from exc
     return DomainsOut(account_id=account_id, domains=domains)

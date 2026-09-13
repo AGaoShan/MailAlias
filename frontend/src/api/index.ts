@@ -2,6 +2,7 @@ import client from "./client";
 import type {
   Account,
   Alias,
+  AliasBatchResult,
   DashboardStats,
   DomainsResponse,
   LoginResponse,
@@ -51,6 +52,14 @@ export const aliasApi = {
     const { data } = await client.post<Alias>(`/accounts/${accountId}/aliases`, { address });
     return data;
   },
+  async createAuto(address: string, accountId?: number | null, silent = false): Promise<Alias> {
+    const { data } = await client.post<Alias>(
+      "/aliases",
+      { address, account_id: accountId ?? null },
+      { silent },
+    );
+    return data;
+  },
   async remove(id: number): Promise<void> {
     await client.delete(`/aliases/${id}`);
   },
@@ -62,8 +71,26 @@ export const aliasApi = {
     const { data } = await client.put<Alias>(`/aliases/${id}/display-name`, { display_name: displayName });
     return data;
   },
-  async domains(accountId: number): Promise<DomainsResponse> {
-    const { data } = await client.get<DomainsResponse>(`/accounts/${accountId}/domains`);
+  async domains(accountId: number, refresh = false): Promise<DomainsResponse> {
+    const { data } = await client.get<DomainsResponse>(`/accounts/${accountId}/domains`, {
+      params: refresh ? { refresh: true } : undefined,
+    });
+    return data;
+  },
+  async batchGenerate(options: {
+    count: number;
+    domain: string;
+    accountId?: number | null;
+    prefix?: string;
+    length?: number;
+  }): Promise<AliasBatchResult> {
+    const { data } = await client.post<AliasBatchResult>("/aliases/batch-generate", {
+      count: options.count,
+      domain: options.domain,
+      account_id: options.accountId ?? null,
+      prefix: options.prefix ?? "",
+      length: options.length ?? 10,
+    });
     return data;
   },
 };

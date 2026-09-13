@@ -1,6 +1,6 @@
 import { defineStore } from "pinia";
 import { aliasApi } from "@/api";
-import type { Alias } from "@/api/types";
+import type { Alias, AliasBatchResult } from "@/api/types";
 
 interface AliasState {
   aliases: Alias[];
@@ -27,14 +27,33 @@ export const useAliasStore = defineStore("alias", {
       }
     },
 
-    async fetchDomains(accountId: number): Promise<void> {
-      const result = await aliasApi.domains(accountId);
+    async fetchDomains(accountId: number, refresh = false): Promise<void> {
+      const result = await aliasApi.domains(accountId, refresh);
       this.domains = result.domains;
+    },
+
+    async batchGenerate(options: {
+      count: number;
+      domain: string;
+      accountId?: number | null;
+      prefix?: string;
+      length?: number;
+    }): Promise<AliasBatchResult> {
+      return aliasApi.batchGenerate(options);
     },
 
     async create(accountId: number, address: string): Promise<Alias> {
       const alias = await aliasApi.create(accountId, address);
       this.aliases.push(alias);
+      this.lastCreatedId = alias.id;
+      return alias;
+    },
+
+    async createAuto(address: string, accountId?: number | null, silent = false): Promise<Alias> {
+      const alias = await aliasApi.createAuto(address, accountId, silent);
+      if (!this.aliases.some((item) => item.id === alias.id)) {
+        this.aliases.push(alias);
+      }
       this.lastCreatedId = alias.id;
       return alias;
     },
