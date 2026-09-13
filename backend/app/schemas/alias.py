@@ -42,6 +42,24 @@ class AliasBatchResult(BaseModel):
     items: list[AliasBatchItem]
 
 
+class AliasDeleteRequest(BaseModel):
+    alias_ids: list[int] = Field(min_length=1, description="要删除的别名 ID 列表")
+
+
+class AliasDeleteItem(BaseModel):
+    alias_id: int
+    address: str
+    ok: bool
+    error: dict | None = None
+
+
+class AliasDeleteResult(BaseModel):
+    requested: int
+    deleted: int
+    failed: int
+    items: list[AliasDeleteItem]
+
+
 class AliasOut(BaseModel):
     id: int
     account_id: int

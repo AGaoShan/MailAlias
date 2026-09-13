@@ -5,8 +5,14 @@
 
     <div class="login-card">
       <div class="login-header">
-        <span class="logo-mark"><el-icon :size="20"><Message /></el-icon></span>
-        <h2>mail.com 别名管理</h2>
+        <span class="logo-mark">
+          <svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true">
+            <rect x="2.4" y="4.6" width="19.2" height="14.8" rx="3.1" fill="none" stroke="#ffffff" stroke-width="1.7" />
+            <path d="M6.2 9.6 L12 13.3 L17.8 9.6" fill="none" stroke="#ffffff" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" />
+            <circle cx="18.4" cy="16.2" r="2.1" fill="#409eff" stroke="#1f2d3d" stroke-width="1.1" />
+          </svg>
+        </span>
+        <h2>MailAlias</h2>
         <p>多账号 · 别名 · 取件地址统一管理</p>
       </div>
 

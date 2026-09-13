@@ -1,10 +1,20 @@
-from .account import AccountCreate, AccountOut, AccountVerifyOut, DomainsOut
+from .account import (
+    AccountCreate,
+    AccountExportItem,
+    AccountExportOut,
+    AccountOut,
+    AccountVerifyOut,
+    DomainsOut,
+)
 from .alias import (
     AliasAutoCreate,
     AliasBatchGenerate,
     AliasBatchItem,
     AliasBatchResult,
     AliasCreate,
+    AliasDeleteItem,
+    AliasDeleteRequest,
+    AliasDeleteResult,
     AliasOut,
     DefaultSenderUpdate,
     DisplayNameUpdate,
@@ -25,6 +35,8 @@ from .pickup import (
 __all__ = [
     "AccountCreate",
     "AccountOut",
+    "AccountExportItem",
+    "AccountExportOut",
     "AccountVerifyOut",
     "DomainsOut",
     "AliasCreate",
@@ -33,6 +45,9 @@ __all__ = [
     "AliasBatchGenerate",
     "AliasBatchItem",
     "AliasBatchResult",
+    "AliasDeleteRequest",
+    "AliasDeleteItem",
+    "AliasDeleteResult",
     "DisplayNameUpdate",
     "DefaultSenderUpdate",
     "LoginRequest",

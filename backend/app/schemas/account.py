@@ -16,6 +16,7 @@ class AccountOut(BaseModel):
     alias_count: int
     alias_limit: int
     session_state: str
+    session_state_text: str
     created_at: str
     updated_at: str
 
@@ -23,6 +24,7 @@ class AccountOut(BaseModel):
 class AccountVerifyOut(BaseModel):
     account_id: int
     session_state: str
+    session_state_text: str
     ok: bool
 
 

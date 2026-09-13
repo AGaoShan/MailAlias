@@ -6,6 +6,9 @@
         <p class="page-subtitle">已接入 {{ store.accounts.length }} 个 mail.com 账号</p>
       </div>
       <div class="header-actions">
+        <el-button :disabled="store.accounts.length === 0" @click="openExport">
+          <el-icon><Download /></el-icon>批量导出
+        </el-button>
         <el-button @click="openBatch">
           <el-icon><Upload /></el-icon>批量导入
         </el-button>
@@ -27,10 +30,11 @@
             <span class="mono text-muted">{{ row.account_key }}</span>
           </template>
         </el-table-column>
-        <el-table-column label="会话状态" width="120">
+        <el-table-column label="登录状态" width="130">
           <template #default="{ row }">
-            <el-tag :type="sessionStateType(row.session_state)" effect="light">
-              {{ sessionStateText(row.session_state) }}
+            <el-tag :type="sessionStateType(row.session_state)" effect="light" class="state-tag">
+              <span v-if="row.session_state === 'logging_in'" class="spin-dot" />
+              {{ row.session_state_text || sessionStateText(row.session_state) }}
             </el-tag>
           </template>
         </el-table-column>
@@ -136,6 +140,25 @@
         </el-button>
       </template>
     </el-dialog>
+
+    <el-dialog v-model="exportVisible" title="批量导出账号" width="640px" @closed="resetExport">
+      <el-alert
+        type="warning"
+        :closable="false"
+        class="mb-12"
+        title="导出内容包含明文密码，请妥善保管，避免泄露"
+      />
+      <el-alert type="info" :closable="false" class="mb-12" title="格式：邮箱----密码（可直接用于批量导入）" />
+      <el-input v-model="exportText" type="textarea" :rows="10" readonly class="mono" />
+      <div class="export-actions">
+        <el-button size="small" @click="copyExport">复制全部</el-button>
+        <el-button size="small" @click="downloadExport">下载 txt</el-button>
+        <span class="text-muted export-stat">共 {{ exportCount }} 个账号</span>
+      </div>
+      <template #footer>
+        <el-button @click="exportVisible = false">关闭</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -143,9 +166,10 @@
 import { computed, reactive, ref } from "vue";
 import { useRouter } from "vue-router";
 import { ElMessage, ElMessageBox, type FormInstance, type FormRules } from "element-plus";
+import { accountApi } from "@/api";
 import { useAccountStore } from "@/stores/account";
 import type { Account } from "@/api/types";
-import { sessionStateText, sessionStateType } from "@/utils/format";
+import { copyText, sessionStateText, sessionStateType } from "@/utils/format";
 import { parseAccountLine, parseAccountText } from "@/utils/accountParser";
 
 const router = useRouter();
@@ -264,6 +288,53 @@ function resetBatch(): void {
   batchResults.value = [];
 }
 
+const exportVisible = ref(false);
+const exportText = ref("");
+const exportCount = ref(0);
+
+async function openExport(): Promise<void> {
+  exportVisible.value = true;
+  exportText.value = "";
+  exportCount.value = 0;
+  try {
+    const items = await accountApi.exportCredentials();
+    exportText.value = items.map((item) => `${item.email}----${item.password}`).join("\n");
+    exportCount.value = items.length;
+  } catch {
+    exportVisible.value = false;
+  }
+}
+
+function resetExport(): void {
+  exportText.value = "";
+  exportCount.value = 0;
+}
+
+async function copyExport(): Promise<void> {
+  if (!exportText.value) {
+    ElMessage.warning("没有可复制的内容");
+    return;
+  }
+  const ok = await copyText(exportText.value);
+  if (ok) ElMessage.success(`已复制 ${exportCount.value} 个账号（格式：邮箱----密码）`);
+}
+
+function downloadExport(): void {
+  if (!exportText.value) {
+    ElMessage.warning("没有可下载的内容");
+    return;
+  }
+  const blob = new Blob([exportText.value], { type: "text/plain;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `mailcom_accounts_${Date.now()}.txt`;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
+}
+
 async function handleVerify(id: number): Promise<void> {
   verifyingId.value = id;
   try {
@@ -289,7 +360,51 @@ function goAliases(id: number): void {
 <style scoped>
 .header-actions {
   display: flex;
+  gap: 12px;
+}
+
+/* ---------- 批量导出 ---------- */
+.export-actions {
+  display: flex;
+  align-items: center;
   gap: 10px;
+  margin-top: 10px;
+}
+
+.export-stat {
+  font-size: 12px;
+  margin-left: auto;
+}
+
+.mb-12 {
+  margin-bottom: 12px;
+}
+
+/* ---------- 登录状态 ---------- */
+.state-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.spin-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+  animation: state-pulse 1s ease-in-out infinite;
+}
+
+@keyframes state-pulse {
+  0%,
+  100% {
+    opacity: 0.25;
+    transform: scale(0.75);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.05);
+  }
 }
 
 .usage-text {

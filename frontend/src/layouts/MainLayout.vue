@@ -2,8 +2,14 @@
   <el-container class="layout">
     <el-aside width="228px" class="aside">
       <div class="logo">
-        <span class="logo-mark"><el-icon :size="17"><Message /></el-icon></span>
-        <span class="logo-text">mail.com <em>别名管理</em></span>
+        <span class="logo-mark">
+          <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+            <rect x="2.4" y="4.6" width="19.2" height="14.8" rx="3.1" fill="none" stroke="#ffffff" stroke-width="1.7" />
+            <path d="M6.2 9.6 L12 13.3 L17.8 9.6" fill="none" stroke="#ffffff" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" />
+            <circle cx="18.4" cy="16.2" r="2.1" fill="#ffffff" />
+          </svg>
+        </span>
+        <span class="logo-text">Mail<em>Alias</em></span>
       </div>
 
       <el-menu :default-active="activeMenu" router class="menu">
@@ -23,7 +29,7 @@
       <el-header class="header">
         <div class="header-left">
           <h1 class="header-title">{{ currentTitle }}</h1>
-          <span class="header-crumb">mail.com 别名管理与取件</span>
+          <span class="header-crumb">MailAlias · 多账号别名与取件</span>
         </div>
         <div class="header-right">
           <el-tag v-if="auth.user" class="user-chip" effect="plain" round>
@@ -120,16 +126,15 @@ async function handleLogout(): Promise<void> {
   display: flex;
   align-items: center;
   justify-content: center;
-  color: #fff;
   background: linear-gradient(140deg, var(--brand-400), var(--brand-600));
   box-shadow: 0 2px 8px rgba(47, 174, 149, 0.3);
   flex-shrink: 0;
 }
 
 .logo-text {
-  font-size: 14.5px;
-  font-weight: 650;
-  letter-spacing: -0.02em;
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
   color: var(--text-primary);
   white-space: nowrap;
 }
@@ -137,7 +142,7 @@ async function handleLogout(): Promise<void> {
 .logo-text em {
   font-style: normal;
   font-weight: 400;
-  color: var(--text-muted);
+  color: var(--brand-600);
 }
 
 .menu {

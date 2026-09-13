@@ -7,6 +7,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -57,7 +58,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="mail.com 多账号别名管理与取件系统",
+    title="MailAlias · 邮箱别名管理与取件",
     description="多账号 · 别名 · 取件地址统一管理",
     version="1.0.0",
     lifespan=lifespan,
@@ -101,6 +102,21 @@ def health() -> dict:
 
 
 # ---------- 统一错误格式 ----------
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
+    """把参数校验错误规整为统一结构。"""
+    errors = exc.errors()
+    first = errors[0] if errors else {}
+    location = ".".join(str(part) for part in first.get("loc", []) if part not in ("body", "query", "path"))
+    message = str(first.get("msg", "参数校验失败"))
+    if location:
+        message = f"{location}: {message}"
+    return JSONResponse(
+        status_code=422,
+        content={"detail": {"code": "VALIDATION_ERROR", "message": message}},
+    )
+
+
 @app.exception_handler(Exception)
 async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
     logger.exception("未处理异常：%s %s", request.method, request.url.path)

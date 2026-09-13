@@ -12,6 +12,7 @@ from ..mailcom import MailComAliasClient, MailComError
 from ..models import Account
 from ..schemas import AccountOut
 from ..security.crypto import decrypt_secret, encrypt_secret
+from . import session_state
 from .session_manager import acquire_client, store_settings_session
 
 
@@ -40,6 +41,7 @@ class AccountService:
             alias_count=len(account.aliases),
             alias_limit=settings.max_aliases_per_account,
             session_state=account.session_state,
+            session_state_text=session_state.state_text(account.session_state),
             created_at=_iso(account.created_at),
             updated_at=_iso(account.updated_at),
         )
@@ -92,7 +94,7 @@ class AccountService:
             email=normalized,
             password_enc=encrypt_secret(password),
             enabled=True,
-            session_state="active",
+            session_state=session_state.ACTIVE,
         )
         self.db.add(account)
         self.db.flush()
@@ -110,24 +112,17 @@ class AccountService:
         self.db.commit()
 
     async def verify(self, account_id: int) -> AccountOut:
+        """校验/重建账号会话；状态由会话管理器统一维护。"""
         account = self.db.get(Account, account_id)
         if account is None:
             raise MailComError(f"账号不存在：{account_id}")
 
         client: MailComAliasClient | None = None
         try:
-            # 复用持久化会话；失效时才回退全量登录（acquire_client 内部已写回会话）
+            # 复用持久化会话；失效时才回退全量登录（内部会维护登录状态）
             client = await acquire_client(self.db, account)
-            account.session_state = "active"
-            account.updated_at = datetime.now(UTC)
-        except MailComError:
-            account.session_state = "error"
-            account.updated_at = datetime.now(UTC)
-            self.db.commit()
-            raise
         finally:
             if client is not None:
                 await client.close()
-        self.db.commit()
         self.db.refresh(account)
         return self._to_out(account)

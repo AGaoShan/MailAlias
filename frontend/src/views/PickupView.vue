@@ -75,6 +75,11 @@
               <span class="message-date">{{ formatTime(message.date) }}</span>
             </div>
             <div class="message-from mono">{{ message.from }}</div>
+            <div v-if="message.code" class="message-code">
+              <span class="code-label">验证码</span>
+              <span class="code-value mono">{{ message.code }}</span>
+              <span class="code-copy" @click.stop="copyCode(message.code)">复制</span>
+            </div>
             <div class="message-preview text-muted">{{ message.preview }}</div>
             <div class="message-tags">
               <span class="mini-tag">{{ message.folder }}</span>
@@ -98,6 +103,13 @@
         <el-empty v-if="!activeMessage" description="点击左侧邮件查看正文" />
         <div v-else class="body-wrap">
           <h3 class="body-subject">{{ activeMessage.subject || "(无主题)" }}</h3>
+          <div v-if="activeMessage.code" class="body-code">
+            <span class="code-label">验证码</span>
+            <span class="code-value mono">{{ activeMessage.code }}</span>
+            <el-button size="small" type="primary" plain @click="copyCode(activeMessage.code)">
+              复制验证码
+            </el-button>
+          </div>
           <div class="body-meta">
             <div class="meta-row"><span class="meta-key">发件人</span><span class="mono">{{ activeMessage.from }}</span></div>
             <div class="meta-row"><span class="meta-key">收件人</span><span class="mono">{{ activeMessage.to.join(", ") }}</span></div>
@@ -124,7 +136,7 @@ import { ElMessage } from "element-plus";
 import { mappingApi } from "@/api";
 import { pickupApi } from "@/api/pickup";
 import type { Mapping, Message, PickupResponse } from "@/api/types";
-import { formatTime } from "@/utils/format";
+import { copyText, formatTime } from "@/utils/format";
 
 const mappings = ref<Mapping[]>([]);
 const selectedMappingKey = ref<string | null>(null);
@@ -188,6 +200,12 @@ async function loadBody(): Promise<void> {
 async function openMessage(message: Message): Promise<void> {
   activeMessage.value = message;
   await loadBody();
+}
+
+async function copyCode(code: string | null): Promise<void> {
+  if (!code) return;
+  const ok = await copyText(code);
+  if (ok) ElMessage.success(`已复制验证码：${code}`);
 }
 
 onMounted(async () => {
@@ -331,6 +349,56 @@ onMounted(async () => {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* ---------- 验证码 ---------- */
+.message-code {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+  padding: 2px 10px;
+  border-radius: 4px;
+  background: rgba(64, 158, 255, 0.1);
+  border: 1px solid rgba(64, 158, 255, 0.25);
+}
+
+.code-label {
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+.code-value {
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: var(--brand);
+}
+
+.code-copy {
+  font-size: 11px;
+  color: var(--brand);
+  cursor: pointer;
+  user-select: none;
+}
+
+.code-copy:hover {
+  text-decoration: underline;
+}
+
+.body-code {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 0 0 14px;
+  padding: 10px 14px;
+  border-radius: 6px;
+  background: rgba(64, 158, 255, 0.08);
+  border: 1px solid rgba(64, 158, 255, 0.22);
+}
+
+.body-code .code-value {
+  font-size: 20px;
 }
 
 .message-tags {

@@ -12,7 +12,8 @@ export interface LoginResponse {
   user: User;
 }
 
-export type SessionState = "active" | "expired" | "error" | "none";
+/** 账号登录状态，与后端 session_state 常量一致 */
+export type SessionState = "unknown" | "logging_in" | "active" | "expired" | "error" | "none";
 
 export interface Account {
   id: number;
@@ -22,8 +23,21 @@ export interface Account {
   alias_count: number;
   alias_limit: number;
   session_state: SessionState;
+  session_state_text: string;
   created_at: string;
   updated_at: string;
+}
+
+export interface AccountExportItem {
+  email: string;
+  password: string;
+  session_state: SessionState;
+  alias_count: number;
+}
+
+export interface AccountExportResponse {
+  total: number;
+  items: AccountExportItem[];
 }
 
 export interface Alias {
@@ -56,6 +70,20 @@ export interface AliasBatchResult {
   items: AliasBatchItem[];
 }
 
+export interface AliasDeleteItem {
+  alias_id: number;
+  address: string;
+  ok: boolean;
+  error: { code: string; message: string } | null;
+}
+
+export interface AliasDeleteResult {
+  requested: number;
+  deleted: number;
+  failed: number;
+  items: AliasDeleteItem[];
+}
+
 export interface Mapping {
   alias_id: number;
   account_id: number;
@@ -81,6 +109,7 @@ export interface Message {
   read: boolean;
   has_attachments: boolean;
   folder: string;
+  code: string | null;
 }
 
 export interface PickupResponse {

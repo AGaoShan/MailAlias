@@ -20,6 +20,8 @@ from ..mailcom import (
     MailComAliasLimitError,
     MailComDomainUnavailableError,
     MailComError,
+    MailComNotDeletableError,
+    MailComNotFoundError,
     PickupResolver,
     SettingsAlias,
     split_alias_address,
@@ -28,7 +30,7 @@ from ..mailcom.generator import random_local_part
 from ..mailcom.resilience import WriteRateLimiter
 from ..models import Account, Alias, DomainCache, PickupBinding
 from ..schemas import AliasOut
-from .session_manager import acquire_client, invalidate_settings_session
+from .session_manager import acquire_client, reauthenticate
 
 T = TypeVar("T")
 
@@ -93,9 +95,10 @@ class AliasService:
         """执行一次 CATS 操作；若因令牌失效(401)失败，则重新登录后重试一次。
 
         对齐 SDK：正常情况直接使用缓存令牌，不做前置探活；
-        只有真正被上游拒绝时才处理失效。
+        只有真正被上游拒绝时才处理失效。并发的 401 只会触发一次登录。
         """
         client = await self._upstream_client(account)
+        stale_token = client.access_token
         try:
             return await operation(client)
         except MailComError as exc:
@@ -104,13 +107,16 @@ class AliasService:
         finally:
             await client.close()
 
-        # 令牌被拒：清空会话后重新登录，再试一次
-        invalidate_settings_session(self.db, account)
-        client = await self._upstream_client(account)
+        # 令牌被拒：按代次重新登录（若已被其它请求登录过则直接复用）
+        client = await self._reauthenticate(account, stale_token)
         try:
             return await operation(client)
         finally:
             await client.close()
+
+    async def _reauthenticate(self, account: Account, stale_token: str | None) -> MailComAliasClient:
+        """令牌失效后的恢复：并发场景下复用他人刚登录的会话，避免重复登录。"""
+        return await reauthenticate(self.db, account, stale_token)
 
     async def domains(self, account_id: int, *, refresh: bool = False) -> list[str]:
         """获取账号可用域名。
@@ -327,10 +333,23 @@ class AliasService:
             await self.write_limiter.wait(f"account:{account.id}")
             # 注意：不使用本地计数跳过校验。mail.com 的别名可能由用户在网页端
             # 手动创建，本地计数并不可靠；必须让上游按真实数量校验，否则会撞 409。
-            created = await entry.client.create_alias(
-                address,
-                max_aliases=settings.max_aliases_per_account,
-            )
+            stale_token = entry.client.access_token
+            try:
+                created = await entry.client.create_alias(
+                    address,
+                    max_aliases=settings.max_aliases_per_account,
+                )
+            except MailComError as exc:
+                # 令牌失效：按代次重新登录（并发时复用他人刚登录的会话）后重试一次
+                if getattr(exc, "status", None) not in (401, 403):
+                    raise
+                await entry.client.close()
+                entry.client = await self._reauthenticate(account, stale_token)
+                await self.write_limiter.wait(f"account:{account.id}")
+                created = await entry.client.create_alias(
+                    address,
+                    max_aliases=settings.max_aliases_per_account,
+                )
 
         alias = self._upsert_alias(account, created)
         pickup_url = self.resolver.build(account.account_key, alias.address)
@@ -417,6 +436,82 @@ class AliasService:
 
             self.db.delete(alias)
             self.db.commit()
+
+    async def delete_many(
+        self,
+        alias_ids: list[int],
+    ) -> list[tuple[int, str, MailComError | None]]:
+        """批量删除别名。
+
+        - 按账号聚合，复用同一客户端，避免重复登录与拉取
+        - 同一账号内串行，不同账号可并行
+        - 单个失败不影响其他，返回 [(alias_id, 地址, 错误), ...]
+        """
+        # 按账号分组；不存在或不可删除的单独记为失败
+        by_account: dict[int, list[Alias]] = {}
+        results: list[tuple[int, str, MailComError | None]] = []
+        for alias_id in dict.fromkeys(alias_ids):  # 去重且保持顺序
+            alias = self.db.get(Alias, alias_id)
+            if alias is None:
+                results.append((alias_id, str(alias_id), MailComNotFoundError(f"别名不存在：{alias_id}")))
+                continue
+            if alias.deletable is False:
+                results.append((alias_id, alias.address, MailComNotDeletableError(f"该别名不可删除：{alias.address}")))
+                continue
+            by_account.setdefault(alias.account_id, []).append(alias)
+
+        clients: dict[int, MailComAliasClient] = {}
+
+        async def delete_group(account_id: int, group: list[Alias]) -> None:
+            account = self.db.get(Account, account_id)
+            if account is None:
+                for alias in group:
+                    results.append((alias.id, alias.address, MailComError("账号不存在")))
+                return
+
+            async with self.write_limiter.lock(f"account:{account_id}"):
+                client: MailComAliasClient | None = None
+                try:
+                    client = clients.get(account_id)
+                    if client is None:
+                        client = await self._upstream_client(account)
+                        clients[account_id] = client
+
+                    for alias in group:
+                        try:
+                            await self.write_limiter.wait(f"account:{account_id}")
+                            stale_token = client.access_token
+                            try:
+                                await client.delete_alias(alias.address)
+                            except MailComError as exc:
+                                # 令牌失效：按代次重新登录（并发时复用新会话），再试一次
+                                if getattr(exc, "status", None) not in (401, 403):
+                                    raise
+                                await client.close()
+                                client = await self._reauthenticate(account, stale_token)
+                                clients[account_id] = client
+                                await self.write_limiter.wait(f"account:{account_id}")
+                                await client.delete_alias(alias.address)
+
+                            record = self.db.get(Alias, alias.id)
+                            if record is not None:
+                                self.db.delete(record)
+                                self.db.commit()
+                            results.append((alias.id, alias.address, None))
+                        except MailComError as exc:
+                            self.db.rollback()
+                            results.append((alias.id, alias.address, exc))
+                finally:
+                    client = clients.pop(account_id, None)
+                    if client is not None:
+                        await client.close()
+
+        await asyncio.gather(*(delete_group(account_id, group) for account_id, group in by_account.items()))
+
+        # 保持与传入顺序一致
+        order = {alias_id: index for index, alias_id in enumerate(dict.fromkeys(alias_ids))}
+        results.sort(key=lambda item: order.get(item[0], 0))
+        return results
 
     async def set_default_sender(self, alias_id: int, sender: str) -> AliasOut:
         alias = self.db.get(Alias, alias_id)

@@ -23,6 +23,14 @@
         >
           <el-icon><DocumentCopy /></el-icon>复制全部
         </el-button>
+        <el-button
+          type="danger"
+          plain
+          :disabled="deletableCount === 0"
+          @click="selectAllDeletable"
+        >
+          <el-icon><Select /></el-icon>全选可删除 ({{ deletableCount }})
+        </el-button>
         <el-button type="primary" plain :disabled="!hasAnyAccount" @click="openBatch">
           <el-icon><Files /></el-icon>批量生成
         </el-button>
@@ -65,15 +73,30 @@
     </el-card>
 
     <el-card>
+      <div v-if="selectedIds.length > 0" class="batch-bar">
+        <span class="batch-bar-text">已选 {{ selectedIds.length }} 个别名</span>
+        <el-button size="small" @click="clearSelection">取消选择</el-button>
+        <el-button size="small" type="danger" :loading="batchDeleting" @click="handleBatchDelete">
+          <el-icon><Delete /></el-icon>批量删除
+        </el-button>
+      </div>
       <el-table
+        ref="tableRef"
         :data="aliasStore.aliases"
         v-loading="aliasStore.loading"
         empty-text="暂无别名"
         :row-class-name="rowClassName"
+        @selection-change="onSelectionChange"
       >
+        <el-table-column type="selection" width="46" :selectable="isSelectable" />
         <el-table-column prop="address" label="别名地址" min-width="200">
           <template #default="{ row }">
             <span class="mono">{{ row.address }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column prop="created_at" label="创建时间" width="165">
+          <template #default="{ row }">
+            <span class="text-muted time-cell">{{ formatTime(row.created_at) }}</span>
           </template>
         </el-table-column>
         <el-table-column prop="display_name" label="显示名" width="140">
@@ -86,11 +109,6 @@
           <template #default="{ row }">
             <el-tag v-if="row.is_default_sender" type="success" effect="light">是</el-tag>
             <span v-else class="text-muted">否</span>
-          </template>
-        </el-table-column>
-        <el-table-column label="可删除" width="95" align="center">
-          <template #default="{ row }">
-            <span class="text-muted">{{ row.deletable ? "是" : "否" }}</span>
           </template>
         </el-table-column>
         <el-table-column prop="pickup_url" label="取件地址" min-width="200" show-overflow-tooltip>
@@ -256,7 +274,7 @@ import { ElMessage, ElMessageBox, type FormInstance, type FormRules } from "elem
 import { useAccountStore } from "@/stores/account";
 import { useAliasStore } from "@/stores/alias";
 import type { Alias } from "@/api/types";
-import { copyText, sessionStateText, sessionStateType } from "@/utils/format";
+import { copyText, formatTime, sessionStateText, sessionStateType } from "@/utils/format";
 
 const route = useRoute();
 const store = useAccountStore();
@@ -351,6 +369,64 @@ const isFull = computed(() => {
 
 function rowClassName({ row }: { row: Alias }): string {
   return row.id === aliasStore.lastCreatedId ? "row-highlight" : "";
+}
+
+/* ---------- 批量删除 ---------- */
+const tableRef = ref<{ clearSelection: () => void; toggleAllSelection: () => void }>();
+const selectedIds = ref<number[]>([]);
+const batchDeleting = ref(false);
+
+/** 只有可删除的别名才能被勾选 */
+function isSelectable(row: Alias): boolean {
+  return row.deletable;
+}
+
+/** 当前列表中可删除的别名数量 */
+const deletableCount = computed(() => aliasStore.aliases.filter((alias) => alias.deletable).length);
+
+/** 一键勾选全部可删除的别名（再次点击取消） */
+function selectAllDeletable(): void {
+  if (selectedIds.value.length > 0) {
+    tableRef.value?.clearSelection();
+    selectedIds.value = [];
+    return;
+  }
+  tableRef.value?.toggleAllSelection();
+}
+
+function onSelectionChange(rows: Alias[]): void {
+  selectedIds.value = rows.map((row) => row.id);
+}
+
+function clearSelection(): void {
+  tableRef.value?.clearSelection();
+  selectedIds.value = [];
+}
+
+async function handleBatchDelete(): Promise<void> {
+  const ids = selectedIds.value;
+  if (ids.length === 0) return;
+
+  const deletableCount = aliasStore.aliases.filter(
+    (alias) => ids.includes(alias.id) && alias.deletable,
+  ).length;
+  await ElMessageBox.confirm(`确定删除选中的 ${deletableCount} 个别名吗？此操作不可撤销。`, "警告", {
+    type: "warning",
+  });
+
+  batchDeleting.value = true;
+  try {
+    const result = await aliasStore.removeMany(ids);
+    if (result.failed > 0) {
+      ElMessage.warning(`删除完成：成功 ${result.deleted}，失败 ${result.failed}`);
+    } else {
+      ElMessage.success(`已删除 ${result.deleted} 个别名`);
+    }
+    clearSelection();
+    await Promise.all([loadAliases(), store.fetchAll()]);
+  } finally {
+    batchDeleting.value = false;
+  }
 }
 
 function onLocalPartInput(value: string): void {
@@ -635,6 +711,29 @@ onMounted(async () => {
 
 .alias-input {
   width: 100%;
+}
+
+/* ---------- 批量操作条 ---------- */
+.batch-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  margin-bottom: 12px;
+  background: rgba(64, 158, 255, 0.08);
+  border: 1px solid rgba(64, 158, 255, 0.22);
+  border-radius: 6px;
+}
+
+.batch-bar-text {
+  font-size: 13px;
+  color: var(--brand);
+  font-weight: 600;
+  margin-right: auto;
+}
+
+.time-cell {
+  font-size: 12.5px;
 }
 
 /* ---------- 批量生成 ---------- */

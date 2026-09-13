@@ -15,6 +15,9 @@ from ..schemas import (
     AliasBatchGenerate,
     AliasBatchItem,
     AliasBatchResult,
+    AliasDeleteItem,
+    AliasDeleteRequest,
+    AliasDeleteResult,
     AliasOut,
     DefaultSenderUpdate,
     DisplayNameUpdate,
@@ -88,6 +91,43 @@ async def batch_generate_aliases(
         requested=payload.count,
         created=created,
         failed=len(items) - created,
+        items=items,
+    )
+
+
+@router.post(
+    "/batch-delete",
+    response_model=AliasDeleteResult,
+    summary="批量删除别名",
+)
+async def batch_delete_aliases(
+    payload: AliasDeleteRequest,
+    db: Session = Depends(get_db),
+    resolver: PickupResolver = Depends(get_pickup_resolver),
+    write_limiter: WriteRateLimiter = Depends(get_write_limiter),
+    _user: User = Depends(get_current_user),
+) -> AliasDeleteResult:
+    """批量删除别名及映射；单个失败不影响其他。"""
+    raw = await AliasService(db, resolver, write_limiter).delete_many(payload.alias_ids)
+
+    items: list[AliasDeleteItem] = []
+    for alias_id, address, error in raw:
+        if error is None:
+            items.append(AliasDeleteItem(alias_id=alias_id, address=address, ok=True))
+        else:
+            items.append(
+                AliasDeleteItem(
+                    alias_id=alias_id,
+                    address=address,
+                    ok=False,
+                    error={"code": error.code, "message": error.message},
+                )
+            )
+    deleted = sum(1 for item in items if item.ok)
+    return AliasDeleteResult(
+        requested=len(payload.alias_ids),
+        deleted=deleted,
+        failed=len(items) - deleted,
         items=items,
     )
 

@@ -1,6 +1,6 @@
 import { defineStore } from "pinia";
 import { aliasApi } from "@/api";
-import type { Alias, AliasBatchResult } from "@/api/types";
+import type { Alias, AliasBatchResult, AliasDeleteResult } from "@/api/types";
 
 interface AliasState {
   aliases: Alias[];
@@ -61,6 +61,13 @@ export const useAliasStore = defineStore("alias", {
     async remove(id: number): Promise<void> {
       await aliasApi.remove(id);
       this.aliases = this.aliases.filter((alias) => alias.id !== id);
+    },
+
+    async removeMany(ids: number[]): Promise<AliasDeleteResult> {
+      const result = await aliasApi.removeMany(ids);
+      const deleted = new Set(result.items.filter((item) => item.ok).map((item) => item.alias_id));
+      this.aliases = this.aliases.filter((alias) => !deleted.has(alias.id));
+      return result;
     },
 
     async setDefaultSender(id: number, sender: "email" | "name-email"): Promise<void> {

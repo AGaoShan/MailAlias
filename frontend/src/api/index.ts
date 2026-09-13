@@ -1,8 +1,11 @@
 import client from "./client";
 import type {
   Account,
+  AccountExportItem,
+  AccountExportResponse,
   Alias,
   AliasBatchResult,
+  AliasDeleteResult,
   DashboardStats,
   DomainsResponse,
   LoginResponse,
@@ -41,6 +44,10 @@ export const accountApi = {
     const { data } = await client.post<VerifyResponse>(`/accounts/${id}/verify`);
     return data;
   },
+  async exportCredentials(): Promise<AccountExportItem[]> {
+    const { data } = await client.get<AccountExportResponse>("/accounts/export");
+    return data.items;
+  },
 };
 
 export const aliasApi = {
@@ -62,6 +69,12 @@ export const aliasApi = {
   },
   async remove(id: number): Promise<void> {
     await client.delete(`/aliases/${id}`);
+  },
+  async removeMany(aliasIds: number[]): Promise<AliasDeleteResult> {
+    const { data } = await client.post<AliasDeleteResult>("/aliases/batch-delete", {
+      alias_ids: aliasIds,
+    });
+    return data;
   },
   async setDefaultSender(id: number, sender: "email" | "name-email"): Promise<Alias> {
     const { data } = await client.put<Alias>(`/aliases/${id}/default-sender`, { sender });

@@ -10,7 +10,16 @@ from ..deps import get_current_user, get_pickup_resolver, get_write_limiter
 from ..mailcom import MailComError, PickupResolver
 from ..mailcom.resilience import WriteRateLimiter
 from ..models import User
-from ..schemas import AccountCreate, AccountOut, AccountVerifyOut, AliasCreate, AliasOut, DomainsOut
+from ..schemas import (
+    AccountCreate,
+    AccountExportItem,
+    AccountExportOut,
+    AccountOut,
+    AccountVerifyOut,
+    AliasCreate,
+    AliasOut,
+    DomainsOut,
+)
 from ..services.account_service import AccountService
 from ..services.alias_service import AliasService
 from ._errors import to_http_exception
@@ -35,6 +44,19 @@ async def create_account(
         raise to_http_exception(exc) from exc
 
 
+@router.get("/export", response_model=AccountExportOut, summary="导出全部账号凭据")
+def export_accounts(
+    db: Session = Depends(get_db),
+    _user: User = Depends(get_current_user),
+) -> AccountExportOut:
+    """导出 `邮箱----密码`，格式与批量导入一致，可再次导入。"""
+    items = AccountService(db).export_credentials()
+    return AccountExportOut(
+        total=len(items),
+        items=[AccountExportItem(**item) for item in items],
+    )
+
+
 @router.delete("/{account_id}", status_code=status.HTTP_204_NO_CONTENT, summary="删除账号")
 def delete_account(
     account_id: int,
@@ -54,7 +76,12 @@ async def verify_account(
         account = await AccountService(db).verify(account_id)
     except MailComError as exc:
         raise to_http_exception(exc) from exc
-    return AccountVerifyOut(account_id=account.id, session_state=account.session_state, ok=True)
+    return AccountVerifyOut(
+        account_id=account.id,
+        session_state=account.session_state,
+        session_state_text=account.session_state_text,
+        ok=True,
+    )
 
 
 def _alias_service(
